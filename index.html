@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PROMPT → VIDEO ｜ 一段提示词如何变成一段视频</title>
+<style>
+  :root{
+    --ink:#05080F;
+    --ink-2:#080D1A;
+    --cyan:#5FE3FF;
+    --violet:#9B7DFF;
+    --amber:#FFC46B;
+    --mint:#7BF2C0;
+    --txt:#DCE6FA;
+    --txt-dim:#8494B4;
+    --font-ui:"Inter","HarmonyOS Sans SC","PingFang SC","Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif;
+    --font-mono:"JetBrains Mono","Cascadia Mono","Consolas","SFMono-Regular","Courier New",monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;background:var(--ink);overflow:hidden}
+  body{font-family:var(--font-ui);color:var(--txt);-webkit-font-smoothing:antialiased}
+
+  #stage{position:fixed;inset:0;display:grid;place-items:center}
+  .frame{
+    position:relative;
+    width:min(100vw, 177.78vh);
+    aspect-ratio:16/9;
+    border-radius:14px;
+    overflow:hidden;
+    background:var(--ink);
+    box-shadow:0 40px 140px -40px #000, 0 0 0 1px rgba(120,160,220,.10), 0 0 90px -30px rgba(95,227,255,.18);
+  }
+  canvas#screen{display:block;width:100%;height:100%;background:var(--ink)}
+
+  /* 胶片颗粒 + 暗角，画在 DOM 上层，成本极低 */
+  .grain{
+    position:absolute;inset:-40%;
+    pointer-events:none;mix-blend-mode:overlay;
+    opacity:.5;
+    background-repeat:repeat;
+    animation:grainShift .9s steps(4,end) infinite;
+  }
+  @keyframes grainShift{
+    0%{transform:translate3d(0,0,0)}
+    25%{transform:translate3d(-2%,1.5%,0)}
+    50%{transform:translate3d(1.5%,-2%,0)}
+    75%{transform:translate3d(-1%,-1%,0)}
+    100%{transform:translate3d(0,0,0)}
+  }
+  .vignette{
+    position:absolute;inset:0;pointer-events:none;
+    background:radial-gradient(120% 100% at 50% 45%, transparent 42%, rgba(0,0,0,.42) 88%, rgba(0,0,0,.66) 100%);
+  }
+  .wb{
+    position:absolute;inset:0;pointer-events:none;opacity:0;
+    background:radial-gradient(90% 80% at 50% 50%, rgba(255,255,255,.9), rgba(190,230,255,.35) 55%, transparent 78%);
+    mix-blend-mode:screen;
+  }
+
+  /* 载入与重播 */
+  #veil{
+    position:absolute;inset:0;display:grid;place-items:center;gap:18px;
+    background:radial-gradient(80% 80% at 50% 50%, #080D1A, #04060C 80%);
+    transition:opacity .5s ease;z-index:5;
+  }
+  #veil.hide{opacity:0;pointer-events:none}
+  .veil-inner{text-align:center;display:grid;gap:16px;justify-items:center}
+  .veil-title{
+    font:600 15px/1 var(--font-mono);letter-spacing:.42em;color:var(--txt-dim);
+    text-transform:uppercase;
+  }
+  .veil-bar{width:220px;height:2px;background:rgba(120,160,220,.14);overflow:hidden;border-radius:2px}
+  .veil-bar i{display:block;height:100%;width:40%;background:linear-gradient(90deg,var(--amber),var(--cyan),var(--violet));animation:sweep 1.1s ease-in-out infinite}
+  @keyframes sweep{0%{transform:translateX(-110%)}100%{transform:translateX(360%)}}
+  .start{
+    margin-top:6px;cursor:pointer;
+    font:600 13px/1 var(--font-mono);letter-spacing:.28em;color:#BEE9FF;
+    padding:13px 26px;border-radius:999px;background:rgba(12,22,40,.8);
+    border:1px solid rgba(95,227,255,.35);
+    transition:.25s ease; text-transform:uppercase;
+  }
+  .start:hover{background:rgba(20,40,70,.9);border-color:rgba(95,227,255,.8);box-shadow:0 0 34px -8px rgba(95,227,255,.6);transform:translateY(-1px)}
+
+  /* 控制条 */
+  #hud{
+    position:absolute;left:0;right:0;bottom:0;z-index:4;
+    display:flex;align-items:center;gap:14px;
+    padding:14px 18px 12px;
+    font:500 11px/1 var(--font-mono);letter-spacing:.14em;color:var(--txt-dim);
+    background:linear-gradient(to top, rgba(3,6,12,.86), rgba(3,6,12,0));
+    opacity:0;transition:opacity .3s ease;
+  }
+  .frame:hover #hud, #hud.on{opacity:1}
+  #hud button{
+    all:unset;cursor:pointer;width:26px;height:26px;display:grid;place-items:center;
+    border:1px solid rgba(120,160,220,.25);border-radius:6px;color:#CBE4FF;
+  }
+  #hud button:hover{border-color:rgba(95,227,255,.7);color:#fff}
+  #bar{flex:1;height:3px;background:rgba(120,160,220,.16);border-radius:3px;position:relative;cursor:pointer}
+  #bar i{position:absolute;inset:0 auto 0 0;width:0;background:linear-gradient(90deg,var(--amber),var(--cyan),var(--violet));border-radius:3px}
+  #hud .mono{min-width:96px;text-align:right;color:#9FB6D8}
+  @media (max-width:760px){ #hud{display:none} }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div class="frame" id="frame">
+    <canvas id="screen" width="1920" height="1080"></canvas>
+    <div class="grain" id="grain"></div>
+    <div class="vignette"></div>
+    <div class="wb" id="wb"></div>
+
+    <div id="hud">
+      <button id="btnPlay" title="播放 / 暂停">❚❚</button>
+      <div id="bar"><i></i></div>
+      <div class="mono" id="tc">00:00 / 00:00</div>
+      <button id="btnReplay" title="重新播放" style="width:auto;padding:0 10px;font-size:10px;letter-spacing:.2em">REPLAY</button>
+    </div>
+
+    <div id="veil">
+      <div class="veil-inner">
+        <div class="veil-title">prompt&nbsp;&nbsp;→&nbsp;&nbsp;video</div>
+        <div class="veil-bar"><i></i></div>
+        <button class="start" id="btnStart">播放</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="js/util.js"></script>
+<script src="js/film.js"></script>
+<script src="js/bg.js"></script>
+<script src="js/shots.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>
